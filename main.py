@@ -22,7 +22,7 @@ app_server = Flask(__name__)
 
 @app_server.route("/")
 def home():
-    return "Bot Alive"
+    return "Bot Running"
 
 def keep_alive():
     Thread(target=lambda: app_server.run(
@@ -35,11 +35,11 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_PATH = os.getenv("GITHUB_PATH")
-REPO = os.getenv("GITHUB_REPO")
-
-OWNER, REPO_NAME = REPO.split("/")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
+FILE_PATH = os.getenv("GITHUB_PATH")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_USER_IDS").split(",")))
+
+OWNER, REPO = GITHUB_REPO.split("/")
 
 main_kb = ReplyKeyboardMarkup(
     [["➕ Add User", "📋 User List"]],
@@ -65,26 +65,25 @@ def calculate_expiry(duration):
     return (datetime.now() + timedelta(days=days[duration])).strftime("%Y-%m-%d")
 
 # ---------------- GITHUB ----------------
-def get_github_file():
-    url = f"https://api.github.com/repos/{OWNER}/{REPO_NAME}/contents/{GITHUB_PATH}"
+def get_users():
+    url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     r = requests.get(url, headers=headers)
     if r.status_code == 404:
         return [], None
     data = r.json()
-    return json.loads(base64.b64decode(data["content"])), data["sha"]
+    return json.loads(base64.b64decode(data["content"]).decode()), data["sha"]
 
-def update_github(data, sha, msg):
-    url = f"https://api.github.com/repos/{OWNER}/{REPO_NAME}/contents/{GITHUB_PATH}"
+def save_users(users, sha, msg):
+    url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
+    content = base64.b64encode(json.dumps(users, indent=2).encode()).decode()
     payload = {"message": msg, "content": content, "sha": sha}
     return requests.put(url, headers=headers, json=payload).status_code in (200, 201)
 
 # ---------------- BOT ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Send your KEY")
         return
     context.user_data.clear()
     await update.message.reply_text("Admin Panel", reply_markup=main_kb)
@@ -93,45 +92,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
-    text = update.message.text
-
-    # ---- ADD USER ----
-    if text == "➕ Add User":
-        context.user_data.clear()
-        context.user_data["state"] = "WAIT_DEVICE"
+    if update.message.text == "➕ Add User":
+        context.user_data["step"] = "device"
         await update.message.reply_text("📱 Send Device ID:")
-        return
 
-    # ---- DEVICE RECEIVED ----
-    if context.user_data.get("state") == "WAIT_DEVICE":
-        context.user_data["device_id"] = text
-        context.user_data["state"] = "WAIT_DURATION"
+    elif context.user_data.get("step") == "device":
+        device_id = update.message.text.strip()
+        context.user_data.clear()
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("1 Month", callback_data="dur|1 Month"),
-             InlineKeyboardButton("3 Months", callback_data="dur|3 Months")],
-            [InlineKeyboardButton("6 Months", callback_data="dur|6 Months"),
-             InlineKeyboardButton("1 Year", callback_data="dur|1 Year")],
-            [InlineKeyboardButton("Lifetime", callback_data="dur|Lifetime")]
+            [
+                InlineKeyboardButton("1 Month", callback_data=f"dur|{device_id}|1 Month"),
+                InlineKeyboardButton("3 Months", callback_data=f"dur|{device_id}|3 Months")
+            ],
+            [
+                InlineKeyboardButton("6 Months", callback_data=f"dur|{device_id}|6 Months"),
+                InlineKeyboardButton("1 Year", callback_data=f"dur|{device_id}|1 Year")
+            ],
+            [InlineKeyboardButton("Lifetime", callback_data=f"dur|{device_id}|Lifetime")]
         ])
 
-        await update.message.reply_text("Select Duration:", reply_markup=kb)
-        return
+        await update.message.reply_text(
+            f"Device ID saved:\n<code>{device_id}</code>\n\nSelect Duration:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    # ---- DURATION CLICK ----
     if q.data.startswith("dur|"):
-        if context.user_data.get("state") != "WAIT_DURATION":
-            await q.edit_message_text("❌ Session expired. Add user again.")
-            return
+        _, device_id, duration = q.data.split("|", 2)
 
-        duration = q.data.split("|")[1]
-        device_id = context.user_data.get("device_id")
-
-        users, sha = get_github_file()
+        users, sha = get_users()
 
         if any(u["Device Id"] == device_id for u in users):
             await q.edit_message_text("❌ Device already exists")
@@ -146,24 +140,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "expiry": expiry
         })
 
-        update_github(users, sha, "Add user")
-
-        context.user_data.clear()
-
-        await q.edit_message_text(
-            f"✅ <b>USER CREATED</b>\n\n"
-            f"🔑 <code>{key}</code>\n"
-            f"📅 Expiry: {expiry if expiry else 'Unlimited'}",
-            parse_mode=ParseMode.HTML
-        )
+        if save_users(users, sha, "Add user"):
+            await q.edit_message_text(
+                f"✅ <b>KEY CREATED</b>\n\n"
+                f"🔑 <code>{key}</code>\n"
+                f"📅 Expiry: {expiry if expiry else 'Unlimited'}",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await q.edit_message_text("❌ GitHub save failed")
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     keep_alive()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling()
-
