@@ -1,8 +1,6 @@
-import json, random, string, base64, os, logging
+import json, random, string, base64, os
 from datetime import datetime, timedelta
 from threading import Thread
-from typing import List, Dict, Tuple, Optional
-
 import requests
 from dotenv import load_dotenv
 from flask import Flask
@@ -23,7 +21,7 @@ app_server = Flask('')
 
 @app_server.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot running"
 
 def keep_alive():
     Thread(target=lambda: app_server.run(
@@ -32,16 +30,15 @@ def keep_alive():
     )).start()
 
 # ---------------- CONFIG ----------------
-logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 FILE_PATH = os.getenv("GITHUB_PATH")
 REPO = os.getenv("GITHUB_REPO")
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_USER_IDS", "").split(",")))
 
 OWNER, REPO_NAME = REPO.split("/") if REPO else (None, None)
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_USER_IDS", "").split(",")))
 
 main_kb = ReplyKeyboardMarkup(
     [["➕ Add User", "📋 User List"],
@@ -49,17 +46,14 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-def is_admin(uid: int) -> bool:
+def is_admin(uid):
     return uid in ADMIN_IDS
 
 # ---------------- HELPERS ----------------
-def generate_key(existing: set) -> str:
-    while True:
-        key = "KEY-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
-        if key not in existing:
-            return key
+def generate_key():
+    return "KEY-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
 
-def calculate_expiry(duration: str) -> str:
+def calculate_expiry(duration):
     if duration == "Lifetime":
         return ""
     days = {
@@ -70,13 +64,8 @@ def calculate_expiry(duration: str) -> str:
     }
     return (datetime.now() + timedelta(days=days[duration])).strftime("%Y-%m-%d")
 
-def is_expired(expiry: str) -> bool:
-    if not expiry:
-        return False
-    return datetime.strptime(expiry, "%Y-%m-%d") < datetime.now()
-
 # ---------------- GITHUB ----------------
-def get_github_file() -> Tuple[List[Dict], Optional[str]]:
+def get_github_file():
     url = f"https://api.github.com/repos/{OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     r = requests.get(url, headers=headers)
@@ -86,7 +75,7 @@ def get_github_file() -> Tuple[List[Dict], Optional[str]]:
     content = base64.b64decode(data["content"]).decode()
     return json.loads(content), data["sha"]
 
-def update_github_file(data: List[Dict], sha: str, msg: str) -> bool:
+def update_github_file(data, sha, msg):
     url = f"https://api.github.com/repos/{OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     encoded = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
@@ -96,50 +85,27 @@ def update_github_file(data: List[Dict], sha: str, msg: str) -> bool:
 # ---------------- BOT ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🔑 Send your KEY")
         return
+
     context.user_data.clear()
-    await update.message.reply_text("👋 Management Panel", reply_markup=main_kb)
+    await update.message.reply_text("👋 Admin Panel", reply_markup=main_kb)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Admin only")
         return
 
     text = update.message.text
 
     if text == "➕ Add User":
-        context.user_data["step"] = "device"
+        context.user_data["step"] = "await_device"
         await update.message.reply_text("📱 Send Device ID:")
 
-    elif text == "📋 User List":
-        users, _ = get_github_file()
-        if not users:
-            await update.message.reply_text("Empty list")
-            return
-
-        kb = []
-        for i, u in enumerate(users):
-            icon = "⛔" if is_expired(u["expiry"]) else "✅"
-            kb.append([InlineKeyboardButton(
-                f"{icon} {u['key']}", callback_data=f"idx:{i}"
-            )])
-
-        await update.message.reply_text(
-            "📋 Users", reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    elif text == "🔍 Search User":
-        context.user_data["step"] = "search"
-        await update.message.reply_text("Send Device ID or KEY:")
-
-    elif text == "📊 Statistics":
-        users, _ = get_github_file()
-        active = sum(1 for u in users if not is_expired(u["expiry"]))
-        await update.message.reply_text(
-            f"📊 Total: {len(users)}\n✅ Active: {active}"
-        )
-
-    elif context.user_data.get("step") == "device":
+    elif context.user_data.get("step") == "await_device":
         context.user_data["device_id"] = text
+        context.user_data["step"] = "await_duration"
+
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("1 Month", callback_data="dur:1 Month"),
              InlineKeyboardButton("3 Months", callback_data="dur:3 Months")],
@@ -147,41 +113,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("1 Year", callback_data="dur:1 Year")],
             [InlineKeyboardButton("Lifetime", callback_data="dur:Lifetime")]
         ])
+
         await update.message.reply_text("Select Duration:", reply_markup=kb)
 
-    elif context.user_data.get("step") == "search":
+    elif text == "📊 Statistics":
         users, _ = get_github_file()
-        u = next((x for x in users if text in x["Device Id"] or text in x["key"]), None)
-        if not u:
-            await update.message.reply_text("❌ Not found")
-            return
-        await show_user(update.message, users.index(u), u)
-        context.user_data.clear()
+        await update.message.reply_text(f"Total Users: {len(users)}")
 
-async def show_user(msg, idx, u):
-    exp = u["expiry"] if u["expiry"] else "Unlimited"
-    txt = (
-        f"🔑 <b>Key:</b> <code>{u['key']}</code>\n"
-        f"📱 <b>Device:</b> <code>{u['Device Id']}</code>\n"
-        f"📅 <b>Expiry:</b> {exp}"
-    )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Renew", callback_data=f"renew:{idx}"),
-         InlineKeyboardButton("Delete", callback_data=f"del:{idx}")]
-    ])
-    await msg.reply_text(txt, parse_mode=ParseMode.HTML, reply_markup=kb)
-
+# ---------------- CALLBACK ----------------
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    # ----- CREATE USER -----
+    # ---- SELECT DURATION (FIXED) ----
     if q.data.startswith("dur:"):
         duration = q.data.split(":", 1)[1]
         device_id = context.user_data.get("device_id")
 
         if not device_id:
-            await q.edit_message_text("❌ Device ID missing. Add again.")
+            await q.edit_message_text("❌ Device ID lost. Please add again.")
             return
 
         users, sha = get_github_file()
@@ -190,8 +140,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("❌ Device already exists")
             return
 
-        existing_keys = {u["key"] for u in users}
-        key = generate_key(existing_keys)
+        key = generate_key()
         expiry = calculate_expiry(duration)
 
         users.append({
@@ -200,46 +149,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "expiry": expiry
         })
 
-        update_github_file(users, sha, "Add user")
-
-        # DM KEY TO ADMIN
-        await q.message.reply_text(
-            f"✅ <b>KEY CREATED</b>\n\n🔑 <code>{key}</code>",
-            parse_mode=ParseMode.HTML
-        )
+        if update_github_file(users, sha, "Add user"):
+            await q.edit_message_text(
+                f"✅ <b>KEY CREATED</b>\n\n"
+                f"🔑 <code>{key}</code>\n"
+                f"📅 Expiry: {expiry if expiry else 'Unlimited'}",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await q.edit_message_text("❌ GitHub update failed")
 
         context.user_data.clear()
-
-    # ----- VIEW USER -----
-    elif q.data.startswith("idx:"):
-        users, _ = get_github_file()
-        idx = int(q.data.split(":")[1])
-        await show_user(q.message, idx, users[idx])
-
-    # ----- DELETE -----
-    elif q.data.startswith("del:"):
-        users, sha = get_github_file()
-        idx = int(q.data.split(":")[1])
-        users.pop(idx)
-        update_github_file(users, sha, "Delete user")
-        await q.edit_message_text("✅ Deleted")
-
-    # ----- RENEW -----
-    elif q.data.startswith("renew:"):
-        idx = int(q.data.split(":")[1])
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("1 Month", callback_data=f"set:{idx}:1 Month"),
-             InlineKeyboardButton("1 Year", callback_data=f"set:{idx}:1 Year")]
-        ])
-        await q.edit_message_text("Select Renewal:", reply_markup=kb)
-
-    elif q.data.startswith("set:"):
-        _, idx, dur = q.data.split(":")
-        idx = int(idx)
-        users, sha = get_github_file()
-        users[idx]["expiry"] = calculate_expiry(dur)
-        update_github_file(users, sha, "Renew user")
-        await q.edit_message_text("✅ Renewed Successfully")
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
