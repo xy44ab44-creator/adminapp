@@ -193,7 +193,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Device Id": dev,
             "password": generate_password(),
             "expiry": calculate_expiry(q.data.split(":")[1]),
-            "chat_id": q.from_user.id
+            "": q.from_user.id
         }
 
         users.append(new_user)
