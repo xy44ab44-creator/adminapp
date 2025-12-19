@@ -8,5 +8,5 @@
     "Device Id": "Fufuyffy",
     "key": "CKR5C3-ZKP7IP-69G9PL-GWRN5D",
     "expiry": "2026-01-18"
-  }
+  },
 ]
