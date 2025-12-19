@@ -28,7 +28,7 @@ from telegram.ext import (
     filters,
 )
 
-# ================= KEEP ALIVE =================
+# ================= KEEP ALIVE SERVER =================
 app_server = Flask('')
 
 @app_server.route('/')
@@ -43,7 +43,10 @@ def keep_alive():
     Thread(target=run_server).start()
 
 # ================= LOGGING =================
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 logger = logging.getLogger(__name__)
 
 # ================= ENV =================
@@ -52,11 +55,15 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 FILE_PATH = os.getenv("GITHUB_PATH")
-
 full_repo = os.getenv("GITHUB_REPO")
-GITHUB_OWNER, REPO_NAME = full_repo.split("/") if full_repo else (None, None)
 
-ADMIN_USER_IDS = list(map(int, os.getenv("ADMIN_USER_IDS", "").split(",")))
+if full_repo and "/" in full_repo:
+    GITHUB_OWNER, REPO_NAME = full_repo.split("/", 1)
+else:
+    GITHUB_OWNER = REPO_NAME = None
+
+admin_ids_str = os.getenv("ADMIN_USER_IDS", "")
+ADMIN_USER_IDS = list(map(int, admin_ids_str.split(","))) if admin_ids_str else []
 
 # ================= KEYBOARD =================
 main_keyboard = ReplyKeyboardMarkup(
@@ -69,20 +76,22 @@ main_keyboard = ReplyKeyboardMarkup(
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_USER_IDS
 
-def generate_password(length=8) -> str:
-    chars = string.ascii_letters + string.digits
-    return "".join(random.choices(chars, k=length))
+def generate_key() -> str:
+    chars = string.ascii_uppercase + string.digits
+    return "-".join("".join(random.choices(chars, k=6)) for _ in range(4))
 
 def calculate_expiry(duration: str) -> str:
-    if duration == "Lifetime":
-        return ""
-    days_map = {
+    now = datetime.now()
+    days = {
         "1 Month": 30,
+        "2 Months": 60,
         "3 Months": 90,
         "6 Months": 180,
-        "1 Year": 365
+        "1 Year": 365,
     }
-    return (datetime.now() + timedelta(days=days_map.get(duration, 0))).strftime("%Y-%m-%d")
+    if duration == "Lifetime":
+        return ""
+    return (now + timedelta(days=days.get(duration, 0))).strftime("%Y-%m-%d")
 
 async def cleanup_messages(context, chat_id):
     for msg_id in context.user_data.get("messages_to_delete", []):
@@ -93,37 +102,43 @@ async def cleanup_messages(context, chat_id):
     context.user_data["messages_to_delete"] = []
 
 # ================= GITHUB =================
-def get_github_file() -> Tuple[List[Dict], Optional[str]]:
+def get_github_file() -> Tuple[Optional[List[Dict]], Optional[str]]:
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
 
-    r = requests.get(url, headers=headers)
-    if r.status_code == 404:
-        return [], None
-
-    data = r.json()
-    content = base64.b64decode(data["content"]).decode()
-    return json.loads(content), data["sha"]
+    try:
+        r = requests.get(url, headers=headers)
+        if r.status_code == 404:
+            return [], None
+        r.raise_for_status()
+        data = r.json()
+        content = base64.b64decode(data["content"]).decode()
+        return json.loads(content), data["sha"]
+    except Exception as e:
+        logger.error(e)
+        return None, None
 
 def update_github_file(data: List[Dict], sha: str, msg: str) -> bool:
     url = f"https://api.github.com/repos/{GITHUB_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    payload = {
-        "message": msg,
-        "content": base64.b64encode(json.dumps(data, indent=2).encode()).decode(),
-        "sha": sha,
-    }
+    content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
+
+    payload = {"message": msg, "content": content}
+    if sha:
+        payload["sha"] = sha
+
     r = requests.put(url, headers=headers, json=payload)
     return r.status_code in (200, 201)
 
-# ================= START =================
+# ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     context.user_data.clear()
     await update.message.reply_text(
-        "🔐 Management Panel",
-        reply_markup=main_keyboard
+        "👋 <b>Key Management Panel</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard,
     )
 
 # ================= MESSAGE HANDLER =================
@@ -140,61 +155,132 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "device"
 
     elif text == "📋 User List":
-        users, _ = get_github_file()
-        await update.message.reply_text(json.dumps(users, indent=2))
+        await show_users(update)
+
+    elif text == "🔍 Search User":
+        context.user_data["action"] = "search"
+        msg = await update.message.reply_text("🔍 Send Device ID:")
+        context.user_data["messages_to_delete"] = [msg.message_id]
 
     elif text == "📊 Statistics":
         users, _ = get_github_file()
-        await update.message.reply_text(f"Total Users: {len(users)}")
+        await update.message.reply_text(f"📊 Total Keys: {len(users or [])}")
 
     elif context.user_data.get("action") == "device":
         context.user_data["device"] = text
         del context.user_data["action"]
+        await show_duration(update, context)
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("1 Month", callback_data="dur:1 Month")],
-            [InlineKeyboardButton("3 Months", callback_data="dur:3 Months")],
-            [InlineKeyboardButton("6 Months", callback_data="dur:6 Months")],
-            [InlineKeyboardButton("1 Year", callback_data="dur:1 Year")],
-            [InlineKeyboardButton("Lifetime", callback_data="dur:Lifetime")],
-        ])
-        msg = await update.message.reply_text("⏳ Select Duration:", reply_markup=kb)
-        context.user_data["messages_to_delete"].append(msg.message_id)
+    elif context.user_data.get("action") == "search":
+        await search_user(update, context, text)
+        del context.user_data["action"]
+
+# ================= UI =================
+async def show_duration(update, context):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1 Month", callback_data="dur:1 Month"),
+         InlineKeyboardButton("3 Months", callback_data="dur:3 Months")],
+        [InlineKeyboardButton("6 Months", callback_data="dur:6 Months"),
+         InlineKeyboardButton("1 Year", callback_data="dur:1 Year")],
+        [InlineKeyboardButton("Lifetime", callback_data="dur:Lifetime")]
+    ])
+    msg = await update.message.reply_text("⏳ Select Duration:", reply_markup=kb)
+    context.user_data["messages_to_delete"].append(msg.message_id)
+
+async def show_users(update):
+    users, _ = get_github_file()
+    if not users:
+        await update.message.reply_text("No users found.")
+        return
+
+    kb = []
+    for i, u in enumerate(users):
+        kb.append([InlineKeyboardButton(
+            f"🔑 {u.get('Device Id')}",
+            callback_data=f"idx:{i}"
+        )])
+
+    await update.message.reply_text(
+        "📋 <b>Users</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+
+async def search_user(update, context, q):
+    users, _ = get_github_file()
+    user = next((u for u in users if q in u.get("Device Id", "")), None)
+    if user:
+        idx = users.index(user)
+        await show_user_detail(update.message, idx, user)
+    else:
+        await update.message.reply_text("❌ Not found")
 
 # ================= CALLBACK =================
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    duration = q.data.split(":")[1]
-    device_id = context.user_data.get("device")
+    if q.data.startswith("dur:"):
+        await create_user(q, context, q.data.split(":")[1])
 
+    elif q.data.startswith("idx:"):
+        users, _ = get_github_file()
+        idx = int(q.data.split(":")[1])
+        await show_user_detail(q.message, idx, users[idx])
+
+    elif q.data.startswith("del:"):
+        users, sha = get_github_file()
+        idx = int(q.data.split(":")[1])
+        deleted = users.pop(idx)
+        update_github_file(users, sha, "Delete key")
+        await q.edit_message_text("✅ Deleted")
+
+# ================= CREATE USER =================
+async def create_user(q, context, duration):
+    dev = context.user_data.get("device")
     users, sha = get_github_file()
+    if any(u["Device Id"] == dev for u in users):
+        await q.edit_message_text("❌ Device already exists")
+        return
 
-    new_user = {
-        "password": generate_password(),
-        "Device Id": device_id,
-        "expiry": calculate_expiry(duration)
+    new = {
+        "Device Id": dev,
+        "password": generate_key(),
+        "expiry": calculate_expiry(duration),
     }
-
-    users.append(new_user)
-    update_github_file(users, sha, "Add user")
+    users.append(new)
+    update_github_file(users, sha, "Add key")
 
     await cleanup_messages(context, q.message.chat_id)
     await q.message.reply_text(
-        f"<b>✅ USER ADDED</b>\n\n"
-        f"📱 Device ID: <code>{device_id}</code>\n"
-        f"🔑 Password: <code>{new_user['password']}</code>\n"
-        f"📅 Expiry: {new_user['expiry'] or 'Unlimited'}",
-        parse_mode=ParseMode.HTML
+        f"<b>✅ KEY GENERATED</b>\n\n"
+        f"📱 Device: <code>{dev}</code>\n"
+        f"🔐 Key:\n<code>{new['key']}</code>\n"
+        f"📅 Expiry: {new['expiry'] or 'Unlimited'}",
+        parse_mode=ParseMode.HTML,
+    )
+
+# ================= USER DETAIL =================
+async def show_user_detail(msg, idx, u):
+    await msg.reply_text(
+        f"📱 <b>Device ID:</b> <code>{u['Device Id']}</code>\n"
+        f"🔐 <b>Key:</b>\n<code>{u['key']}</code>\n"
+        f"📅 <b>Expiry:</b> {u['expiry'] or 'Unlimited'}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Delete", callback_data=f"del:{idx}")]
+        ]),
     )
 
 # ================= MAIN =================
 if __name__ == "__main__":
     keep_alive()
 
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.run_polling()
+    if not TELEGRAM_BOT_TOKEN:
+        print("❌ TELEGRAM TOKEN MISSING")
+    else:
+        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(CallbackQueryHandler(handle_callback))
+        app.run_polling()
