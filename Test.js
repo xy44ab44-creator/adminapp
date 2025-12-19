@@ -1,17 +1,8 @@
 [
   {
-    "password": "22",
     "Device Id": "fd5b7efb4a7b9975",
-    "expiry": "2024-09-29"
-  },
-  {
-    "password": "abc123",
-    "Device Id": "65d42f8e39d57060",
-    "expiry": "2025-10-15"
-  },
-  {
-    "password": "singlepass",
-    "Device Id": "65d42f8e39d57060",
-    "expiry": "" // NO DATE NO EXPIRY UNLIMITED KEY 
+    "username": "user3305",
+    "password": "#prbD%@oAo",
+    "expiry": "2026-01-18"
   }
 ]
