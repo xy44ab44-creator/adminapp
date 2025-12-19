@@ -245,7 +245,7 @@ async def create_user(q, context, duration):
 
     new = {
         "Device Id": dev,
-        "password": generate_key(),
+        "key": generate_key(),
         "expiry": calculate_expiry(duration),
     }
     users.append(new)
