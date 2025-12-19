@@ -48,7 +48,8 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-def is_admin(uid): return uid in ADMIN_IDS
+def is_admin(uid): 
+    return uid in ADMIN_IDS
 
 # ================= HELPERS =================
 
@@ -67,7 +68,8 @@ def calculate_expiry(duration):
     return (datetime.now() + timedelta(days=days[duration])).strftime("%Y-%m-%d")
 
 def is_expired(exp):
-    if not exp: return False
+    if not exp:
+        return False
     return datetime.strptime(exp, "%Y-%m-%d") < datetime.now()
 
 # ================= GITHUB =================
@@ -87,19 +89,29 @@ def update_github_file(data, sha, msg):
         "content": base64.b64encode(json.dumps(data, indent=2).encode()).decode(),
         "sha": sha
     }
-    r = requests.put(url, headers={"Authorization": f"token {GITHUB_TOKEN}"}, json=payload)
+    r = requests.put(
+        url,
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json=payload
+    )
     return r.status_code in (200, 201)
 
 # ================= START =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    await update.message.reply_text("👋 Admin Panel", reply_markup=main_keyboard)
+    if not is_admin(update.effective_user.id):
+        return
+    await update.message.reply_text(
+        "👋 Admin Panel",
+        reply_markup=main_keyboard
+    )
 
-# ================= MESSAGE =================
+# ================= MESSAGE HANDLER =================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
+    if not is_admin(update.effective_user.id):
+        return
+
     txt = update.message.text
 
     if txt == "➕ Add User":
@@ -108,11 +120,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif txt == "📋 User List":
         users, _ = get_github_file()
-        kb = [[InlineKeyboardButton(
-            f"{'⛔' if is_expired(u['expiry']) else '✅'} {u['Device Id']}",
-            callback_data=f"idx:{i}")]
-            for i, u in enumerate(users)]
-        await update.message.reply_text("Users:", reply_markup=InlineKeyboardMarkup(kb))
+        if not users:
+            await update.message.reply_text("No users found.")
+            return
+
+        kb = []
+        for i, u in enumerate(users):
+            icon = "⛔" if is_expired(u["expiry"]) else "✅"
+            kb.append([
+                InlineKeyboardButton(
+                    f"{icon} {u['Device Id']}",
+                    callback_data=f"idx:{i}"
+                )
+            ])
+        await update.message.reply_text(
+            "📋 Users:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
     elif txt == "🔍 Search User":
         context.user_data["mode"] = "search"
@@ -141,18 +165,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_user(update.message, i, u)
                 break
         else:
-            await update.message.reply_text("❌ Not found")
+            await update.message.reply_text("❌ User not found")
         context.user_data.pop("mode")
 
     elif "change_pass" in context.user_data:
         idx = context.user_data.pop("change_pass")
         if not txt.isdigit() or len(txt) != 6:
-            await update.message.reply_text("❌ 6 digit number only")
+            await update.message.reply_text("❌ Password must be 6 digits")
             return
         users, sha = get_github_file()
         users[idx]["password"] = txt
         update_github_file(users, sha, "Password changed")
-        await update.message.reply_text("✅ Password updated")
+        await update.message.reply_text("✅ Password updated successfully")
 
 # ================= USER DETAILS =================
 
@@ -161,21 +185,25 @@ async def show_user(msg, idx, u):
     status = "⛔ EXPIRED" if is_expired(u["expiry"]) else "✅ ACTIVE"
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Renew", callback_data=f"renew:{idx}"),
-         InlineKeyboardButton("🔑 Change Pass", callback_data=f"pass:{idx}")],
-        [InlineKeyboardButton("❌ Delete", callback_data=f"del:{idx}")]
+        [
+            InlineKeyboardButton("🔄 Renew", callback_data=f"renew:{idx}"),
+            InlineKeyboardButton("🔑 Change Pass", callback_data=f"pass:{idx}")
+        ],
+        [
+            InlineKeyboardButton("❌ Delete", callback_data=f"del:{idx}")
+        ]
     ])
 
     await msg.reply_text(
-        f"📱 <b>{u['Device Id']}</b>\n"
-        f"🔑 <code>{u['password']}</code>\n"
-        f"📅 {exp}\n"
-        f"📌 {status}",
+        f"📱 <b>Device ID:</b> <code>{u['Device Id']}</code>\n"
+        f"🔑 <b>Password:</b> <code>{u['password']}</code>\n"
+        f"📅 <b>Expiry:</b> {exp}\n"
+        f"📌 <b>Status:</b> {status}",
         parse_mode=ParseMode.HTML,
         reply_markup=kb
     )
 
-# ================= CALLBACK =================
+# ================= CALLBACK HANDLER =================
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -186,31 +214,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dev = context.user_data["device"]
 
         if any(u["Device Id"] == dev for u in users):
-            await q.edit_message_text("❌ Device already exists")
+            await q.edit_message_text("❌ Device ID already exists")
             return
 
         new_user = {
             "Device Id": dev,
             "password": generate_password(),
-            "expiry": calculate_expiry(q.data.split(":")[1]),
-            "": q.from_user.id
+            "expiry": calculate_expiry(q.data.split(":")[1])
         }
 
         users.append(new_user)
         update_github_file(users, sha, "Add user")
 
         await q.edit_message_text(
-            f"✅ Account Created\n\n"
+            f"✅ <b>Account Created</b>\n\n"
             f"📱 <code>{dev}</code>\n"
-            f"🔑 <code>{new_user['password']}</code>",
+            f"🔑 <code>{new_user['password']}</code>\n"
+            f"📅 {new_user['expiry'] or 'Unlimited'}",
             parse_mode=ParseMode.HTML
-        )
-
-        await context.bot.send_message(
-            new_user["chat_id"],
-            f"🎉 Your account\n\n"
-            f"Device: {dev}\n"
-            f"Password: {new_user['password']}"
         )
 
     elif q.data.startswith("idx:"):
@@ -227,7 +248,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("1 Year", callback_data=f"setexp:{idx}:1 Year")],
             [InlineKeyboardButton("Lifetime", callback_data=f"setexp:{idx}:Lifetime")]
         ])
-        await q.edit_message_text("Select Renewal:", reply_markup=kb)
+        await q.edit_message_text("⏳ Select Renewal Period:", reply_markup=kb)
 
     elif q.data.startswith("setexp:"):
         _, idx, dur = q.data.split(":")
@@ -236,16 +257,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[idx]["expiry"] = calculate_expiry(dur)
         update_github_file(users, sha, "Renew user")
 
-        exp = users[idx]["expiry"] or "Unlimited"
-
         await q.edit_message_text(
-            f"✅ Renewed\n📅 {exp}",
+            f"✅ <b>Subscription Renewed</b>\n"
+            f"📅 {users[idx]['expiry'] or 'Unlimited'}",
             parse_mode=ParseMode.HTML
-        )
-
-        await context.bot.send_message(
-            users[idx]["chat_id"],
-            f"✅ Subscription Renewed\nNew Expiry: {exp}"
         )
 
     elif q.data.startswith("pass:"):
