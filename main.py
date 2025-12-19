@@ -35,14 +35,14 @@ def keep_alive():
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("8442850313:AAHfXlhzJSdXr9vd8cmESRh9vvuW6ovcg58")
-GITHUB_TOKEN = os.getenv("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")
-FILE_PATH = os.getenv("Test.js")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+FILE_PATH = os.getenv("GITHUB_PATH")
 
-repo = os.getenv("xy44ab44-creator/adminapp")
+repo = os.getenv("GITHUB_REPO")
 GITHUB_OWNER, REPO_NAME = repo.split("/") if repo else (None, None)
 
-ADMIN_USER_IDS = list(map(int, os.getenv("8222059791", "").split(",")))
+ADMIN_USER_IDS = list(map(int, os.getenv("ADMIN_USER_IDS", "").split(",")))
 
 main_keyboard = ReplyKeyboardMarkup(
     [["➕ Add User", "📋 User List"],
