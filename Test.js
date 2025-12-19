@@ -1,8 +1,7 @@
 [
   {
-    "Device Id": "fd5b7efb4a7b9975",
-    "username": "user6297",
-    "password": "G@qMB8rs01",
-    "expiry": "2026-01-18"
+    "Device Id": "ABC123XYZ",
+    "key": "AB3F9Q-KD82LM-X9PQ2A-RT7Z1C",
+    "expiry": "2025-12-31"
   }
 ]
